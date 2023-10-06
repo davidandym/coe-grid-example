@@ -3,9 +3,9 @@
 A small example for submitting and running experiments on the HLTCOE grid.
 This is not really meant to be an extensive or exhaustive guide to grid usage, just a small sample of what I regularly use to run my own experiments.
 
-## Which Python
+## Conda Envs
 
-I'd recommend using conda to manage environments on the grid. If you're interested in running the code and examples in this repo, you can just copy the environment from the `.yaml` file using the following commannd:
+I'd recommend using conda to manage environments on the grid. If you're interested in running the code and examples in this repo, you can just copy the environment from the `.yaml` file using the following command:
 
 ```bash
 conda env create --file ./environment.yaml
@@ -19,12 +19,11 @@ The correct python version for the environment should be found somewhere like `~
 
 The `qrsh` command can be used to ssh directly into a GPU node with access to one or more GPU.
 This is a really nice way to test and debug your code since you can just run your code and see it's output without the hassle of queues and stuff.
-
-You can run
+You can run:
 ```bash
 sh scripts/interactive_session.sh
 ```
-to ssh into a GPU node with a single GPU allocated. In the file, you can change type and number of GPUs with the two variables defined at the top of the file. The following commands should get you into a GPU node, activate the correct environment, and then run a test job (assuming you're in the correct directory).
+to ssh into a GPU node with a single GPU allocated. In the file `scripts/interactive_session.sh`, you can change type and number of GPUs with the two variables defined at the top of the file. The following commands should get you into a GPU node, activate the correct environment, and then run a test job (assuming you're in the correct directory).
 
 ```bash
 sh scripts/interactive_session.sh
@@ -63,7 +62,6 @@ We also want our experiment to be run from the directory that we're currently wo
 Assuming you're at the top level of this directory, then all of the relative paths that we pass in or use in our experiment will be relative from this directory, rather than your home directory.
 
 The final flag that I use regularly is `-N`, which tells the scheduler what to name my job. This is useful if you're running a bunch of jobs simultaneously, and you want to easily keep track of which job is which.
-
 So, in reality, submitting a single job to the grid looks something like:
 ```bash
 qsub -q gpu.q -l gpu=1 -cwd -N fashionMNIST -l h_rt=1:000:000,mem_free=64G scripts/run_exp.sh
@@ -87,7 +85,7 @@ To see an example of how I do this, see `scripts/submit_batch.py`.
 The gist of my workflow here is that I will create a separate `.sh` file for each set of hyperparameters, and then call `qsub` on each of those files.
 You could instead create a single `.sh` file which takes arguments, and then pass in the hyperparameters as arguments in the `qsub` command. Either way should work just fine!
 
-To submit 5 jobs, for a sweep over 5 random seeds, run
+To test this out, you can submit 5 jobs, for a sweep over 5 random seeds, by running
 ```bash
 python scripts/submit_batch.py
 ```
@@ -121,7 +119,6 @@ Then I would call something like
 qsub -t 1:10 -tc 3 generic.sh
 ```
 to run an array job of 10 jobs, with a max of 3 concurrent jobs, which will run each individual job by calling `tmp_outputs/{1-10}.sh`.
-
 I wrote up a quick sample of how I do this in python. To run an example array job with a max concurrent limit of 3 jobs, run
 ```bash
 python scripts/submit_batch_array.py
