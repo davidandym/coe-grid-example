@@ -37,7 +37,7 @@ torch.manual_seed(args.random_seed)
 torch.cuda.manual_seed_all(args.random_seed)
 
 if not os.path.exists(args.output_dir):
-    os.mkdir(args.output_dir)
+    os.makedirs(args.output_dir)
 
 
 ##################

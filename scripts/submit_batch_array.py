@@ -1,106 +1,87 @@
-""" Script for training cifar-100 ensembles. """
-
-
 import os
-import argparse as ap
 import subprocess
 import shutil
 
 
-exp_dir_temp = "grad_{}_optim_{}_lr_{}_epochs_{}_bs_{}_rs_{}_sha_{}"
+# point to the conda bin for our environment.
+conda_bin = '~/.conda/envs/grid-example/bin'
 
-p = ap.ArgumentParser()
-p.add_argument("--grid_sub", type=str,
-               default="experiments/array_grid_sub.sh")
-p.add_argument("--train_script_dir", type=str,
-               default="experiments/cifar-100/multi-task/post-icml-trying-to-overfit")
-p.add_argument("--experiment_dir", type=str,
-               default="/exp/dmueller/multi-opt/cifar-100/multi-task/post-icml-trying-to-overfit")
+# Define how many jobs can run concurrently in this array
+max_concurrent = 3
 
-p.add_argument("--num_random_seeds", type=int, default=3)
-p.add_argument("--max_concurrent", type=int, default=15)
-args = p.parse_args()
+# create a temporary directory to dump the scripts and job stdout and stderr.
+tmp_script_dir = 'tmp_outputs/array_batch_jobs'
+if os.path.exists(tmp_script_dir):
+    shutil.rmtree(tmp_script_dir)
+os.makedirs(tmp_script_dir)
 
-git_process = subprocess.Popen("git rev-parse --short=5 HEAD",
-                               shell=True,
-                               stderr=None,
-                               stdout=subprocess.PIPE)
+# define initial uid. We want one uid per job to run, and it should increment by 1.
+uid = 1
 
-output = git_process.communicate()
-git_head = output[0].decode('utf-8').strip()
+# loop over the hyperparameters of interest.
+for rs in range(5):
 
-code_copy_dir = "src/git_{}".format(git_head)
-if not os.path.exists(code_copy_dir):
-    shutil.copytree("src/main", code_copy_dir)
+    # use the hyperparameters to determine the experiment directory (where models and training logs will be saved).
+    output_dir = os.path.join(
+        './experiment_outputs/array_batch_jobs',
+        f'random_seed_{rs}'
+    )
 
+    # create a script file, which is the .sh file that will be submitted to qsub.
+    # Note that rather than defining the script with the hyperparameters, we are using the UID only.
+    script_file_path = os.path.join(tmp_script_dir, f'{uid}.sh')
+    script_file = open(script_file_path, 'w')
 
-run_dir = os.path.join(
-    args.train_script_dir,
-    git_head
-)
-if not os.path.exists(run_dir):
-    os.makedirs(os.path.join(run_dir, 'outputs'))
+    # write the .sh file contents
+    sh_file = f'''\
 
-uid = 0
+{conda_bin}/python src/train.py \
+    --output_dir {output_dir} \
+    --random_seed {rs}
+'''
+    
+    # write the script to the file
+    script_file.write(sh_file)
+    script_file.close()
 
-bs_16_lr = 4e-3
+    # Note that we aren't running a qsub command for each experiment, unlike in the batch_submit.
+    # Instead, we will run a single qsub command at the end.
+    uid += 1
 
-for grad in ['avg']:
-    for lr_scale in [1, 5, 20]:
-        for optim in ['momentum']:
-            for epochs in [75]:
-                for bs in [128, 256, 512]:
-                    for rs in range(args.num_random_seeds):
-                        uid += 1
+# Array jobs work by passing a variable, named $SGE_TASK_ID, to the environment when running the job.
+# So here I'm going to create a generic bash script that defines my qsub flags, loads my modules, and then
+# calls the script associated with $SGE_TASK_ID.
+generic_script_file_path = os.path.join(tmp_script_dir, f'run_array_script.sh')
+gen_script_file = open(generic_script_file_path, 'w')
+sh_file = f'''\
+#$ -cwd
+#$ -q gpu.q -l gpu=1
+#$ -l h_rt=1:00:00,mem_free=64G
+#$ -j y
+#$ -N fashion-mnist
+#$ -o {tmp_script_dir}
 
-                        output_dir = os.path.join(
-                            args.experiment_dir,
-                            exp_dir_temp.format(grad, optim, lr_scale, epochs, bs, rs, git_head)
-                        )
-                        if os.path.exists(output_dir):
-                            shutil.rmtree(output_dir)
-                        os.makedirs(output_dir)
+module load cuda11.7/toolkit
+module load cudnn/8.4.0.27_cuda11.x
+module load nccl/2.13.4-1_cuda11.7
 
-                        epoch_steps = 2000 // bs 
-                        max_steps = epoch_steps * epochs
+sh {tmp_script_dir}/${{SGE_TASK_ID}}.sh
+'''
+    
+gen_script_file.write(sh_file)
+gen_script_file.close()
 
-                        lr = lr_scale * bs_16_lr
-
-                        script_file = open(os.path.join(run_dir, f'{uid}.sh'), 'w')
-                        sh_file = f'\
-#! /usr/bin/env bash \n\n\
-python src/git_{git_head}/train_multitask.py \\\n\
-    --seed {rs} \\\n\
-	--dataset "CIFAR-100" \\\n\
-    --tasks "all-tasks" \\\n\
-    --data_dir "/exp/dmueller/data/cifar-100/cifar-100-python" \\\n\
-	--eval_with_model "current" \\\n\
-    --output_dir {output_dir} \\\n\
-    --do_train \\\n\
-    --eval_test \\\n\
-    --eval_dev \\\n\
-    --eval_train \\\n\
-    --gradient {grad} \\\n\
-    --optimizer {optim} \\\n\
-    --classifier_lr "{lr}" \\\n\
-    --enc_lr "{lr}" \\\n\
-    --lr_gamma 0.99 \\\n\
-    --train_batch_size {bs} \\\n\
-    --log_steps 10 \\\n\
-    --steps_in_epoch {epoch_steps + 1} \\\n\
-    --max_steps {max_steps} \\\n\
-    --overwrite_output_dir \n'
-                        script_file.write(sh_file)
-                        script_file.close()
-
-submit_string = "qsub -N cifar-mt -o {} -t 1-{} -tc {} {} {}"
-
+# here we define the qsub array command.
+# -t 1-N indicates that this is an array job with IDs 1 through N.
+# -tc M tells qsub that this array job can run M jobs concurrently.
+# Finally, we pass the generic run_array_script.sh to qsub as the starting point of our jobs.
+submit_string = "qsub -t 1-{} -tc {} {}"
 command = submit_string.format(
-    "{}/outputs".format(run_dir),
     uid,
-    args.max_concurrent,
-    args.grid_sub,
-    os.path.join(args.train_script_dir, git_head)
+    max_concurrent,
+    generic_script_file_path,
 )
+
+# run the qsub command once, submitting all jobs as a single array job.
 process = subprocess.Popen(command, shell=True, stderr=None)
 process.communicate()
